@@ -33,13 +33,18 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	// 根据命令行参数选择要运行的示例
-	if len(os.Args) > 1 && os.Args[1] == "services" {
-		// 运行服务演示
-		runServicesDemo()
-	} else {
-		// 运行基本示例
-		runBasicExample()
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "services":
+			runServicesDemo()
+			return
+		case "http":
+			runHTTPDemo()
+			return
+		}
 	}
+	// 默认运行基本示例
+	runBasicExample()
 }
 
 // 运行基本示例

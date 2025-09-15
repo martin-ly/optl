@@ -117,3 +117,16 @@ go run ./cmd/example
 
 - [OpenTelemetry Go 文档](https://opentelemetry.io/docs/instrumentation/go/)
 - [OpenTelemetry 规范](https://github.com/open-telemetry/opentelemetry-specification)
+
+## 文档
+
+更系统的架构、对标与实践文档见 `docs/`：
+
+- 架构与信号流说明：`docs/architecture.md`
+- 与 OTel 体系/生态对标：`docs/otel-alignment.md`
+- Metrics 现代化迁移方案：`docs/metrics-modernization.md`
+- 安全与运维最佳实践：`docs/security-ops.md`
+- Collector 流水线与配置矩阵：`docs/collector.md`
+- 实验设计与形式化证明：`docs/experiments-proofs.md`
+- 课程化材料：`docs/course.md`
+- 路线图与里程碑：`docs/roadmap.md`

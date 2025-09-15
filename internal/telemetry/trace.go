@@ -2,7 +2,10 @@ package telemetry
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"os"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -16,6 +19,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.30.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -74,19 +78,46 @@ func SetupTracing(cfg Config) (*TraceProvider, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		conn, err := grpc.DialContext(ctx, cfg.OTLPEndpoint,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithBlock(),
-		)
+		// 配置 gRPC 连接选项
+		var grpcOpts []grpc.DialOption
+		
+		// 配置 TLS 凭据
+		if cfg.TLSConfig.Enabled {
+			tlsConfig, err := createTLSConfig(cfg.TLSConfig)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create TLS config: %w", err)
+			}
+			grpcOpts = append(grpcOpts, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
+		} else {
+			grpcOpts = append(grpcOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		}
+		
+		grpcOpts = append(grpcOpts, grpc.WithBlock())
+
+		conn, err := grpc.DialContext(ctx, cfg.OTLPEndpoint, grpcOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to OTLP endpoint: %w", err)
 		}
 
+		// 配置 OTLP 客户端选项
+		var clientOpts []otlptracegrpc.Option
+		clientOpts = append(clientOpts, otlptracegrpc.WithGRPCConn(conn))
+		
+		// 配置重试选项
+		if cfg.RetryConfig.Enabled {
+			clientOpts = append(clientOpts, otlptracegrpc.WithRetry(otlptracegrpc.RetryConfig{
+				Enabled:         true,
+				InitialInterval: cfg.RetryConfig.InitialInterval,
+				MaxInterval:     cfg.RetryConfig.MaxInterval,
+				MaxElapsedTime:  cfg.RetryConfig.MaxElapsedTime,
+				Multiplier:      cfg.RetryConfig.Multiplier,
+				RandomizationFactor: cfg.RetryConfig.RandomizationFactor,
+			}))
+		}
+
 		otlpExporter, err := otlptrace.New(
 			context.Background(),
-			otlptracegrpc.NewClient(
-				otlptracegrpc.WithGRPCConn(conn),
-			),
+			otlptracegrpc.NewClient(clientOpts...),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
@@ -198,32 +229,74 @@ func (e multiSpanExporter) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// createTLSConfig 创建 TLS 配置
+func createTLSConfig(tlsCfg TLSConfig) (*tls.Config, error) {
+	config := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	// 配置 CA 证书
+	if tlsCfg.CAFile != "" {
+		caCert, err := os.ReadFile(tlsCfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+		}
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate")
+		}
+		config.RootCAs = caCertPool
+	}
+
+	// 配置客户端证书（mTLS）
+	if tlsCfg.MTLSEnabled {
+		if tlsCfg.CertFile == "" || tlsCfg.KeyFile == "" {
+			return nil, fmt.Errorf("client certificate and key files are required for mTLS")
+		}
+		cert, err := tls.LoadX509KeyPair(tlsCfg.CertFile, tlsCfg.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client certificate: %w", err)
+		}
+		config.Certificates = []tls.Certificate{cert}
+	}
+
+	// 配置跳过验证（仅开发环境）
+	if tlsCfg.InsecureSkipVerify {
+		config.InsecureSkipVerify = true
+	}
+
+	return config, nil
+}
+
 // createResource 创建并配置资源信息
 func createResource(cfg Config) (*resource.Resource, error) {
-	r, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceNameKey.String(cfg.ServiceName),
-			semconv.ServiceVersionKey.String(cfg.ServiceVersion),
-			//semconv.DeploymentEnvironmentKey.String(cfg.Environment),
-		),
-	)
-	if err != nil {
-		return nil, err
+	// 基础资源属性
+	attrs := []attribute.KeyValue{
+		semconv.ServiceNameKey.String(cfg.ServiceName),
+		semconv.ServiceVersionKey.String(cfg.ServiceVersion),
+		semconv.DeploymentEnvironmentKey.String(cfg.Environment),
+	}
+
+	// 添加服务实例 ID（如果未提供则生成）
+	if instanceID, exists := cfg.ResourceAttributes["service.instance.id"]; exists {
+		attrs = append(attrs, semconv.ServiceInstanceIDKey.String(instanceID))
+	} else {
+		// 生成默认实例 ID
+		hostname, _ := os.Hostname()
+		attrs = append(attrs, semconv.ServiceInstanceIDKey.String(fmt.Sprintf("%s-%d", hostname, os.Getpid())))
 	}
 
 	// 添加额外的资源属性
-	if len(cfg.ResourceAttributes) > 0 {
-		attrs := make([]attribute.KeyValue, 0, len(cfg.ResourceAttributes))
-		for k, v := range cfg.ResourceAttributes {
-			attrs = append(attrs, attribute.String(k, v))
-		}
-		extraAttrs := resource.NewWithAttributes(semconv.SchemaURL, attrs...)
-		r, err = resource.Merge(r, extraAttrs)
-		if err != nil {
-			return nil, err
-		}
+	for k, v := range cfg.ResourceAttributes {
+		attrs = append(attrs, attribute.String(k, v))
+	}
+
+	r, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(semconv.SchemaURL, attrs...),
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	return r, nil

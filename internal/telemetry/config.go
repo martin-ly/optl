@@ -33,6 +33,42 @@ type Config struct {
 	EnableLogs bool
 	// Metric 收集间隔
 	MetricCollectionInterval time.Duration
+	// TLS 配置
+	TLSConfig TLSConfig
+	// 重试配置
+	RetryConfig RetryConfig
+}
+
+// TLSConfig holds TLS/mTLS configuration
+type TLSConfig struct {
+	// 是否启用 TLS
+	Enabled bool
+	// 是否启用 mTLS（客户端证书）
+	MTLSEnabled bool
+	// 客户端证书文件路径
+	CertFile string
+	// 客户端私钥文件路径
+	KeyFile string
+	// CA 证书文件路径
+	CAFile string
+	// 是否跳过证书验证（仅开发环境）
+	InsecureSkipVerify bool
+}
+
+// RetryConfig holds retry and backoff configuration
+type RetryConfig struct {
+	// 是否启用重试
+	Enabled bool
+	// 初始重试间隔
+	InitialInterval time.Duration
+	// 最大重试间隔
+	MaxInterval time.Duration
+	// 最大重试时间
+	MaxElapsedTime time.Duration
+	// 退避乘数
+	Multiplier float64
+	// 随机化因子
+	RandomizationFactor float64
 }
 
 // DefaultConfig returns a default configuration
@@ -50,6 +86,22 @@ func DefaultConfig() Config {
 		EnableMetrics:            getEnvBool("OTEL_ENABLE_METRICS", true),
 		EnableLogs:               getEnvBool("OTEL_ENABLE_LOGS", true),
 		MetricCollectionInterval: getEnvDuration("OTEL_METRIC_COLLECTION_INTERVAL", 10*time.Second),
+		TLSConfig: TLSConfig{
+			Enabled:             getEnvBool("OTEL_TLS_ENABLED", false),
+			MTLSEnabled:         getEnvBool("OTEL_MTLS_ENABLED", false),
+			CertFile:            getEnv("OTEL_TLS_CERT_FILE", ""),
+			KeyFile:             getEnv("OTEL_TLS_KEY_FILE", ""),
+			CAFile:              getEnv("OTEL_TLS_CA_FILE", ""),
+			InsecureSkipVerify:  getEnvBool("OTEL_TLS_INSECURE_SKIP_VERIFY", false),
+		},
+		RetryConfig: RetryConfig{
+			Enabled:               getEnvBool("OTEL_RETRY_ENABLED", true),
+			InitialInterval:       getEnvDuration("OTEL_RETRY_INITIAL_INTERVAL", 1*time.Second),
+			MaxInterval:           getEnvDuration("OTEL_RETRY_MAX_INTERVAL", 5*time.Minute),
+			MaxElapsedTime:        getEnvDuration("OTEL_RETRY_MAX_ELAPSED_TIME", 30*time.Minute),
+			Multiplier:            getEnvFloat("OTEL_RETRY_MULTIPLIER", 1.5),
+			RandomizationFactor:   getEnvFloat("OTEL_RETRY_RANDOMIZATION_FACTOR", 0.5),
+		},
 	}
 }
 
