@@ -3,6 +3,11 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Provider 整合所有遥测功能的提供者
@@ -11,6 +16,9 @@ type Provider struct {
 	traceProvider  *TraceProvider
 	metricProvider *MetricProvider
 	logProvider    *LogProvider
+	startTime      time.Time
+	shutdownErrors metric.Int64Counter
+	providerUp     metric.Int64ObservableGauge
 }
 
 // NewProvider 创建一个新的遥测功能提供者
@@ -45,6 +53,8 @@ func NewProvider(cfg Config) (*Provider, error) {
 		provider.metricProvider = metricProvider
 	}
 
+	provider.initHealthMetrics()
+
 	return provider, nil
 }
 
@@ -74,6 +84,9 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 	}
 
 	if len(errs) > 0 {
+		if p.shutdownErrors != nil {
+			p.shutdownErrors.Add(ctx, int64(len(errs)))
+		}
 		return fmt.Errorf("errors during shutdown: %v", errs)
 	}
 	return nil
@@ -82,4 +95,44 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 // 提供对配置的访问
 func (p *Provider) Config() Config {
 	return p.config
+}
+
+// initHealthMetrics 暴露 Provider 自观测指标
+func (p *Provider) initHealthMetrics() {
+	p.startTime = time.Now()
+	meter := otel.Meter("telemetry.provider")
+
+	up, err := meter.Int64ObservableGauge("telemetry_provider_up",
+		metric.WithDescription("Telemetry provider up gauge (1=up)"),
+		metric.WithUnit("{state}"),
+	)
+	if err == nil {
+		p.providerUp = up
+		_, _ = meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+			o.ObserveInt64(up, 1, metric.WithAttributes(
+				attribute.String("service.name", p.config.ServiceName),
+				attribute.String("service.version", p.config.ServiceVersion),
+				attribute.String("environment", p.config.Environment),
+			))
+			return nil
+		}, up)
+	}
+
+	se, err := meter.Int64Counter("telemetry_shutdown_errors",
+		metric.WithDescription("Number of errors occurred during provider shutdown"),
+	)
+	if err == nil {
+		p.shutdownErrors = se
+	}
+
+	_, _ = meter.Float64ObservableGauge("telemetry_provider_uptime_seconds",
+		metric.WithDescription("Telemetry provider uptime in seconds"),
+		metric.WithUnit("s"),
+		metric.WithFloat64Callback(func(ctx context.Context, o metric.Float64Observer) error {
+			o.Observe(time.Since(p.startTime).Seconds(), metric.WithAttributes(
+				attribute.String("service.name", p.config.ServiceName),
+			))
+			return nil
+		}),
+	)
 }
